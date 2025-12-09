@@ -1,0 +1,45 @@
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local data (DO NOT COMMIT - contains personal email data)
+OutlookMCP/
+chroma_db/
+*.db
+
+# Test files
+test_image.png
+test_*.py
+
+# Environment variables (API keys)
+.env
+.env.local
+
+# Outlook data cache
+email_cache/
