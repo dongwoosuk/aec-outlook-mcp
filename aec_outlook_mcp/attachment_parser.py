@@ -92,8 +92,14 @@ def _get_image_base64(file_path: str) -> tuple[str, str]:
     return image_data, media_type
 
 
-def analyze_image_with_claude(file_path: str, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Analyze image using Claude Vision API"""
+def analyze_image_with_claude(file_path: str = None, image_bytes: bytes = None, api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Analyze image using Claude Vision API
+
+    Args:
+        file_path: Path to image file (optional if image_bytes provided)
+        image_bytes: Raw image bytes (optional if file_path provided)
+        api_key: Anthropic API key (optional, uses env var if not provided)
+    """
     if not ANTHROPIC_AVAILABLE:
         return {"success": False, "error": "anthropic package not installed", "text": ""}
 
@@ -104,12 +110,18 @@ def analyze_image_with_claude(file_path: str, api_key: Optional[str] = None) -> 
         return {"success": False, "error": "ANTHROPIC_API_KEY not set", "text": ""}
 
     try:
-        image_data, media_type = _get_image_base64(file_path)
+        if image_bytes:
+            image_data = base64.standard_b64encode(image_bytes).decode("utf-8")
+            media_type = "image/png"
+        elif file_path:
+            image_data, media_type = _get_image_base64(file_path)
+        else:
+            return {"success": False, "error": "No image provided", "text": ""}
 
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1024,
+            max_tokens=2048,
             messages=[
                 {
                     "role": "user",
@@ -143,8 +155,14 @@ def analyze_image_with_claude(file_path: str, api_key: Optional[str] = None) -> 
         return {"success": False, "error": str(e), "text": ""}
 
 
-def analyze_image_with_gemini(file_path: str, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Analyze image using Gemini Vision API"""
+def analyze_image_with_gemini(file_path: str = None, image_bytes: bytes = None, api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Analyze image using Gemini Vision API
+
+    Args:
+        file_path: Path to image file (optional if image_bytes provided)
+        image_bytes: Raw image bytes (optional if file_path provided)
+        api_key: Google API key (optional, uses env var if not provided)
+    """
     if not GOOGLE_GENAI_AVAILABLE:
         return {"success": False, "error": "google-generativeai package not installed", "text": ""}
 
@@ -159,7 +177,14 @@ def analyze_image_with_gemini(file_path: str, api_key: Optional[str] = None) -> 
 
         # Load image
         from PIL import Image
-        img = Image.open(file_path)
+        import io
+
+        if image_bytes:
+            img = Image.open(io.BytesIO(image_bytes))
+        elif file_path:
+            img = Image.open(file_path)
+        else:
+            return {"success": False, "error": "No image provided", "text": ""}
 
         model = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content([VISION_PROMPT, img])
@@ -219,7 +244,7 @@ class AttachmentParser:
 
         try:
             if ext == ".pdf":
-                return self._parse_pdf(file_path)
+                return self._parse_pdf(file_path, vision_provider)
             elif ext == ".docx":
                 return self._parse_docx(file_path)
             elif ext == ".xlsx":
@@ -233,15 +258,61 @@ class AttachmentParser:
         except Exception as e:
             return {"success": False, "error": str(e), "text": ""}
 
-    def _parse_pdf(self, file_path: str) -> Dict[str, Any]:
-        """Extract text from PDF using PyMuPDF"""
+    def _parse_pdf(self, file_path: str, vision_provider: Optional[str] = None) -> Dict[str, Any]:
+        """Extract text from PDF using PyMuPDF or Vision AI
+
+        Args:
+            file_path: Path to PDF file
+            vision_provider: "claude", "gemini" for Vision AI, or None for text extraction
+        """
         if not PYMUPDF_AVAILABLE:
             return {"success": False, "error": "PyMuPDF not installed", "text": ""}
 
         try:
             doc = fitz.open(file_path)
             text_parts = []
+            total_tokens = 0
 
+            # Use Vision AI if specified
+            if vision_provider in ["claude", "gemini"]:
+                for page_num, page in enumerate(doc):
+                    # Convert page to image (higher DPI for better quality)
+                    mat = fitz.Matrix(2, 2)  # 2x zoom for better quality (144 DPI)
+                    pix = page.get_pixmap(matrix=mat)
+                    img_bytes = pix.tobytes("png")
+
+                    # Analyze with Vision AI
+                    if vision_provider == "claude":
+                        result = analyze_image_with_claude(image_bytes=img_bytes)
+                    else:
+                        result = analyze_image_with_gemini(image_bytes=img_bytes)
+
+                    if result.get("success"):
+                        text_parts.append(f"[Page {page_num + 1}]\n{result['text']}")
+                        if "tokens_used" in result:
+                            total_tokens += result["tokens_used"]
+                    else:
+                        # Fallback to text extraction if Vision AI fails
+                        page_text = page.get_text()
+                        if page_text.strip():
+                            text_parts.append(f"[Page {page_num + 1}]\n{page_text}")
+
+                doc.close()
+
+                if not text_parts:
+                    return {"success": False, "error": "No content found in PDF", "text": ""}
+
+                result = {
+                    "success": True,
+                    "text": "\n\n".join(text_parts),
+                    "pages": len(text_parts),
+                    "vision": vision_provider,
+                }
+                if total_tokens > 0:
+                    result["tokens_used"] = total_tokens
+                return result
+
+            # Default: Text extraction only
             for page_num, page in enumerate(doc):
                 page_text = page.get_text()
                 if page_text.strip():

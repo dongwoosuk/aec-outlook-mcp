@@ -97,7 +97,7 @@ def _process_attachment_batch(collection, model, attachments_data, config):
                 collection.add(
                     ids=[att_id],
                     embeddings=[embeddings[i]],
-                    documents=[documents[i][:5000]],
+                    documents=[documents[i][:50000]],  # Increased for Vision AI
                     metadatas=[metadata],
                 )
                 indexed += 1
@@ -182,7 +182,7 @@ def _process_email_batch(collection, model, emails):
                 collection.add(
                     ids=[email_id],
                     embeddings=[embeddings[i]],
-                    documents=[documents[i][:5000]],  # Limit document size
+                    documents=[documents[i][:50000]],  # Limit document size (increased for Vision AI)
                     metadatas=[metadata],
                 )
                 indexed += 1
