@@ -2,11 +2,37 @@
 Email Indexer - Embedding and ChromaDB storage for emails
 """
 
+import os
 import json
 import hashlib
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+
+
+def _embedding_model_cached() -> bool:
+    """True if the embedding model is already in the local HuggingFace cache."""
+    import glob
+    roots = [
+        os.environ.get("HF_HUB_CACHE"),
+        os.path.join(os.environ["HF_HOME"], "hub") if os.environ.get("HF_HOME") else None,
+        os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub"),
+    ]
+    for root in roots:
+        if root and glob.glob(os.path.join(root, "models--sentence-transformers--all-MiniLM-L6-v2*")):
+            return True
+    return False
+
+
+# Force HuggingFace offline mode when the model is already cached. Otherwise
+# SentenceTransformer("all-MiniLM-L6-v2") makes a blocking Hub online check that can
+# hang for many minutes on networks where HuggingFace is throttled/blocked (corporate
+# network). Must run before chromadb / sentence-transformers import so their
+# import-time constants pick it up. Skipped if the model isn't cached yet, so a
+# first-run machine can still download it once.
+if _embedding_model_cached():
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import chromadb
 from chromadb.config import Settings

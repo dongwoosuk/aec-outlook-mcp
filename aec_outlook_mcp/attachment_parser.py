@@ -38,11 +38,22 @@ except ImportError:
     pass
 
 try:
+    import os as _os
+    import shutil as _shutil
     import pytesseract
     from PIL import Image
-    # Set Tesseract path on Windows
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    TESSERACT_AVAILABLE = True
+    # Locate the Tesseract engine: default install dir, PATH, then common locations.
+    # TESSERACT_AVAILABLE is only True if the exe actually exists (importing pytesseract
+    # alone is not enough — it shells out to tesseract.exe at runtime).
+    _tess_candidates = [
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+        _os.path.join(_os.environ.get('LOCALAPPDATA', ''), r'Programs\Tesseract-OCR\tesseract.exe'),
+    ]
+    _tess_path = next((p for p in _tess_candidates if p and _os.path.isfile(p)), None) or _shutil.which('tesseract')
+    if _tess_path:
+        pytesseract.pytesseract.tesseract_cmd = _tess_path
+        TESSERACT_AVAILABLE = True
 except ImportError:
     pass
 

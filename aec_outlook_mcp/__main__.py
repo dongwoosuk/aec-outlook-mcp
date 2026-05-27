@@ -1,9 +1,18 @@
 """
-Entry point for running as: python -m outlook_mcp
+Entry point.
+
+  python -m aec_outlook_mcp           -> run the MCP server (stdio)
+  python -m aec_outlook_mcp index ... -> run indexing in this process and exit.
+      The MCP server spawns this form as a child process so indexing (win32com COM)
+      never runs inside the server's asyncio loop, where it deadlocks/hangs.
 """
 
-import asyncio
-from .server import main
+import sys
 
-if __name__ == "__main__":
+if len(sys.argv) > 1 and sys.argv[1] == "index":
+    from .server import run_index_cli
+    run_index_cli(sys.argv[2:])
+else:
+    import asyncio
+    from .server import main
     asyncio.run(main())

@@ -58,6 +58,36 @@ class EmailMessage:
         }
 
 
+@dataclass
+class CalendarEvent:
+    """Represents a calendar event / appointment"""
+    entry_id: str
+    subject: str
+    start_time: datetime
+    end_time: datetime
+    organizer: str
+    required_attendees: List[Dict[str, str]]  # [{name, email}]
+    optional_attendees: List[Dict[str, str]]
+    location: str
+    body: str
+    is_recurring: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            "entry_id": self.entry_id,
+            "subject": self.subject,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "organizer": self.organizer,
+            "required_attendees": self.required_attendees,
+            "optional_attendees": self.optional_attendees,
+            "location": self.location,
+            "body": self.body,
+            "is_recurring": self.is_recurring,
+        }
+        return d
+
+
 class OutlookReader:
     """Read emails from Outlook via COM API"""
 
@@ -358,9 +388,12 @@ class OutlookReader:
             if max_count and count >= max_count:
                 break
 
-            # Check message class (only mail items)
+            # Index mail items (43) and meeting invites (53). Meeting invites arrive in
+            # the Inbox like emails and can carry attachments; filtering to 43 only
+            # skipped them entirely (e.g. the "Cal Poly - Building C" invite). _parse_email
+            # reads every property defensively, so a MeetingItem parses fine.
             try:
-                if item.Class != 43:  # 43 = olMail
+                if item.Class not in (43, 53):  # 43 = olMail, 53 = olMeetingRequest
                     continue
             except:
                 continue
@@ -474,6 +507,195 @@ class OutlookReader:
             return full_path
 
         except Exception as e:
+            return None
+
+    def get_calendar_events(
+        self,
+        since_date: Optional[datetime] = None,
+        until_date: Optional[datetime] = None,
+        max_count: Optional[int] = None,
+        query: Optional[str] = None,
+    ) -> Generator[CalendarEvent, None, None]:
+        """
+        Get calendar events within a date range.
+
+        Args:
+            since_date: Start of date range (inclusive)
+            until_date: End of date range (inclusive)
+            max_count: Maximum number of events to return
+            query: Optional subject filter (case-insensitive substring match)
+
+        Yields:
+            CalendarEvent objects
+        """
+        self._ensure_connection()
+
+        folder = self._namespace.GetDefaultFolder(self.FOLDER_CALENDAR)
+        items = folder.Items
+        items.Sort("[Start]", False)  # ascending by start time
+        items.IncludeRecurrences = True
+
+        # Build COM restriction filter for date range
+        if since_date or until_date:
+            restrictions = []
+            if since_date:
+                start_str = since_date.strftime("%m/%d/%Y %H:%M %p")
+                restrictions.append(f"[Start] >= '{start_str}'")
+            if until_date:
+                end_str = until_date.strftime("%m/%d/%Y %H:%M %p")
+                restrictions.append(f"[End] <= '{end_str}'")
+            filter_str = " AND ".join(restrictions)
+            items = items.Restrict(filter_str)
+
+        count = 0
+        for item in items:
+            if max_count and count >= max_count:
+                break
+
+            event = self._parse_event(item)
+            if event is None:
+                continue
+
+            # Apply subject query filter
+            if query and query.lower() not in event.subject.lower():
+                continue
+
+            count += 1
+            yield event
+
+    def _parse_event(self, item) -> Optional[CalendarEvent]:
+        """Parse an Outlook AppointmentItem (Class == 26) into CalendarEvent."""
+        try:
+            # Check class — 26 = olAppointment
+            if item.Class != 26:
+                return None
+
+            entry_id = item.EntryID
+            subject = item.Subject or "(No Subject)"
+
+            # Times
+            start_time = None
+            end_time = None
+            try:
+                st = item.Start
+                if hasattr(st, "year"):
+                    start_time = datetime(st.year, st.month, st.day,
+                                          st.hour, st.minute, st.second)
+            except:
+                pass
+            try:
+                et = item.End
+                if hasattr(et, "year"):
+                    end_time = datetime(et.year, et.month, et.day,
+                                        et.hour, et.minute, et.second)
+            except:
+                pass
+
+            # Organizer
+            organizer = ""
+            try:
+                organizer = item.Organizer or ""
+            except:
+                pass
+
+            # Location
+            location = ""
+            try:
+                location = item.Location or ""
+            except:
+                pass
+
+            # Body
+            body = ""
+            try:
+                body = item.Body or ""
+            except:
+                pass
+
+            # Recurring
+            is_recurring = False
+            try:
+                is_recurring = item.IsRecurring
+            except:
+                pass
+
+            # Attendees via Recipients collection
+            required_attendees = []
+            optional_attendees = []
+            try:
+                for i in range(1, item.Recipients.Count + 1):
+                    recipient = item.Recipients.Item(i)
+                    name = recipient.Name or ""
+                    email = ""
+                    try:
+                        email = recipient.Address or ""
+                        # Clean up Exchange addresses
+                        if email.startswith("/O="):
+                            try:
+                                eu = recipient.AddressEntry.GetExchangeUser()
+                                if eu:
+                                    email = eu.PrimarySmtpAddress or email
+                            except:
+                                pass
+                    except:
+                        pass
+
+                    attendee_info = {"name": name, "email": email}
+
+                    # Type: 1 = Required, 2 = Optional, 3 = Resource
+                    try:
+                        if recipient.Type == 2:
+                            optional_attendees.append(attendee_info)
+                        elif recipient.Type in (1, 3):
+                            required_attendees.append(attendee_info)
+                        else:
+                            required_attendees.append(attendee_info)
+                    except:
+                        required_attendees.append(attendee_info)
+            except:
+                # Fallback: parse semicolon-delimited strings
+                try:
+                    req_str = item.RequiredAttendees or ""
+                    if req_str:
+                        required_attendees = [
+                            {"name": n.strip(), "email": ""}
+                            for n in req_str.split(";") if n.strip()
+                        ]
+                except:
+                    pass
+                try:
+                    opt_str = item.OptionalAttendees or ""
+                    if opt_str:
+                        optional_attendees = [
+                            {"name": n.strip(), "email": ""}
+                            for n in opt_str.split(";") if n.strip()
+                        ]
+                except:
+                    pass
+
+            return CalendarEvent(
+                entry_id=entry_id,
+                subject=subject,
+                start_time=start_time,
+                end_time=end_time,
+                organizer=organizer,
+                required_attendees=required_attendees,
+                optional_attendees=optional_attendees,
+                location=location,
+                body=body,
+                is_recurring=is_recurring,
+            )
+
+        except Exception:
+            return None
+
+    def get_calendar_event_by_id(self, entry_id: str) -> Optional[CalendarEvent]:
+        """Get a specific calendar event by its Entry ID."""
+        self._ensure_connection()
+        try:
+            item = self._namespace.GetItemFromID(entry_id)
+            return self._parse_event(item)
+        except Exception:
             return None
 
     def close(self):
